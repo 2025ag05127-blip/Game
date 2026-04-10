@@ -1,0 +1,660 @@
+# ============================================================
+# COMPLETE EFFORT ESTIMATOR APP (DeepSeek) – CHAT FIXED
+# ============================================================
+
+# 1. Mount Google Drive and set up project folder
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+project_folder = '/content/drive/MyDrive/effort_estimator_app'
+os.makedirs(project_folder, exist_ok=True)
+os.chdir(project_folder)
+print(f"Working directory: {os.getcwd()}")
+
+# 2. Install required libraries
+!pip install flask pinggy python-docx pdfplumber reportlab pandas requests -q
+
+# 3. Get DeepSeek API Key
+from getpass import getpass
+DEEPSEEK_API_KEY = getpass("Enter your DeepSeek API key: ")
+
+# 4. Create templates folder and HTML (with improved chat error display)
+os.makedirs('templates', exist_ok=True)
+
+html_content = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Effort Estimator (DeepSeek)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; background: #f0f2f5; }
+        .container { max-width: 1400px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 0 15px rgba(0,0,0,0.1); }
+        h1, h2 { color: #2c3e50; text-align: center; }
+        .flex-row { display: flex; gap: 20px; flex-wrap: wrap; }
+        .left-panel { flex: 2; min-width: 300px; }
+        .right-panel { flex: 1; min-width: 250px; background: #f8f9fa; border-radius: 12px; padding: 15px; }
+        .upload-area { background: #eef2f7; padding: 20px; border-radius: 12px; margin-bottom: 20px; text-align: center; border: 2px dashed #2c3e50; }
+        .upload-area input { margin: 10px; }
+        .upload-area button { background: #27ae60; margin: 5px auto; }
+        .upload-area button:hover { background: #1e8449; }
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 20px; margin-bottom: 20px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group label { font-weight: bold; margin-bottom: 5px; color: #2c3e50; }
+        .form-group input { padding: 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+        button { background: #2c3e50; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; margin: 10px 5px; }
+        button:hover { background: #1a252f; }
+        .results { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 20px; }
+        .chart-container { flex: 1; min-width: 300px; }
+        .table-container { flex: 1; min-width: 300px; }
+        table { width: 100%; border-collapse: collapse; background: white; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #2c3e50; color: white; }
+        .total { font-size: 1.4em; font-weight: bold; text-align: center; margin: 20px 0; background: #e8f4f8; padding: 10px; border-radius: 8px; }
+        .error { color: red; text-align: center; }
+        .status { color: #27ae60; text-align: center; margin: 10px; }
+        .chat-box { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: white; border-radius: 8px; margin-bottom: 10px; }
+        .chat-message { margin-bottom: 10px; }
+        .user-msg { color: #2c3e50; font-weight: bold; }
+        .ai-msg { color: #27ae60; margin-left: 15px; }
+        .chat-input { display: flex; gap: 10px; }
+        .chat-input input { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ccc; }
+        .export-btn { background: #e67e22; }
+        .export-btn:hover { background: #d35400; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📊 AI-Powered IT Project Effort Estimator (Local Version)</h1>
+    <p style="text-align:center">Upload requirement documents (Word/PDF) → DeepSeek extracts parameters → Estimate → Chat → Export PDF</p>
+
+    <div class="flex-row">
+        <div class="left-panel">
+            <div class="upload-area">
+                <h3>📄 Upload Business Requirement Documents</h3>
+                <input type="file" id="docFiles" multiple accept=".docx,.pdf">
+                <button type="button" id="uploadBtn">🤖 Extract with DeepSeek</button>
+                <div id="uploadStatus" class="status"></div>
+            </div>
+
+            <form id="effortForm">
+                <div class="form-grid">
+                    <div class="form-group"><label>Number of requirements</label><input type="number" id="req_count" value="60" step="1" required></div>
+                    <div class="form-group"><label>Complexity (1-5)</label><input type="number" id="complexity" value="3" step="0.1" min="1" max="5" required></div>
+                    <div class="form-group"><label>Team experience (years)</label><input type="number" id="team_exp" value="5" step="0.5" min="0" max="15" required></div>
+                    <div class="form-group"><label>Tech uncertainty (0-1)</label><input type="number" id="tech_unc" value="0.5" step="0.05" min="0" max="1" required></div>
+                    <div class="form-group"><label>Integrations count</label><input type="number" id="integrations" value="5" step="1" min="0" required></div>
+                    <div class="form-group"><label>Documentation quality (1-5)</label><input type="number" id="doc_quality" value="3" step="0.1" min="1" max="5" required></div>
+                    <div class="form-group"><label>Deadline pressure (0.5-2)</label><input type="number" id="deadline" value="1.0" step="0.1" min="0.5" max="2" required></div>
+                    <div class="form-group"><label>Domain knowledge (1-5)</label><input type="number" id="domain" value="3" step="0.1" min="1" max="5" required></div>
+                </div>
+                <div style="text-align:center">
+                    <button type="submit">🔮 Estimate Effort</button>
+                    <button type="button" id="exportPdfBtn" class="export-btn">📄 Export Report (PDF)</button>
+                </div>
+            </form>
+
+            <div id="results" style="display:none;">
+                <div class="total" id="totalEffort"></div>
+                <div class="results">
+                    <div class="chart-container"><canvas id="phaseChart"></canvas></div>
+                    <div class="table-container"><table id="phaseTable"><thead><tr><th>Phase</th><th>Hours</th></tr></thead><tbody></tbody></table></div>
+                </div>
+            </div>
+            <div id="errorMsg" class="error"></div>
+        </div>
+
+        <div class="right-panel">
+            <h3>💬 Chat about the estimate</h3>
+            <div id="chatHistory" class="chat-box">
+                <div class="chat-message ai-msg">👋 Ask me anything about the effort estimate, risks, or recommendations.</div>
+            </div>
+            <div class="chat-input">
+                <input type="text" id="chatInput" placeholder="Your question...">
+                <button id="sendChatBtn">Send</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const form = document.getElementById('effortForm');
+    const resultsDiv = document.getElementById('results');
+    const totalSpan = document.getElementById('totalEffort');
+    const tableBody = document.querySelector('#phaseTable tbody');
+    let chart;
+
+    function getCurrentParams() {
+        return {
+            req_count: document.getElementById('req_count').value,
+            complexity: document.getElementById('complexity').value,
+            team_exp: document.getElementById('team_exp').value,
+            tech_unc: document.getElementById('tech_unc').value,
+            integrations: document.getElementById('integrations').value,
+            doc_quality: document.getElementById('doc_quality').value,
+            deadline: document.getElementById('deadline').value,
+            domain: document.getElementById('domain').value
+        };
+    }
+
+    document.getElementById('uploadBtn').addEventListener('click', async () => {
+        const files = document.getElementById('docFiles').files;
+        if (files.length === 0) {
+            document.getElementById('uploadStatus').innerText = 'Please select at least one file.';
+            return;
+        }
+        const formData = new FormData();
+        for (let i = 0; i < files.length; i++) {
+            formData.append('documents', files[i]);
+        }
+        document.getElementById('uploadStatus').innerText = '🤖 Sending to DeepSeek AI...';
+        try {
+            const response = await fetch('/upload', { method: 'POST', body: formData });
+            const data = await response.json();
+            if (response.ok) {
+                document.getElementById('req_count').value = data.req_count;
+                document.getElementById('complexity').value = data.complexity;
+                document.getElementById('team_exp').value = data.team_exp;
+                document.getElementById('tech_unc').value = data.tech_unc;
+                document.getElementById('integrations').value = data.integrations;
+                document.getElementById('doc_quality').value = data.doc_quality;
+                document.getElementById('deadline').value = data.deadline;
+                document.getElementById('domain').value = data.domain;
+                document.getElementById('uploadStatus').innerHTML = '✅ Parameters extracted from ' + files.length + ' document(s). Adjust if needed and click Estimate.';
+            } else {
+                document.getElementById('uploadStatus').innerHTML = '❌ ' + (data.error || 'Extraction failed');
+            }
+        } catch (err) {
+            document.getElementById('uploadStatus').innerHTML = '❌ Network error during upload.';
+        }
+    });
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = getCurrentParams();
+        try {
+            const response = await fetch('/predict', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(formData)
+            });
+            const data = await response.json();
+            if (response.ok) {
+                displayResults(data);
+                sessionStorage.setItem('lastParams', JSON.stringify(formData));
+                sessionStorage.setItem('lastTotal', data.total);
+            } else {
+                document.getElementById('errorMsg').innerText = data.error || 'Prediction failed';
+            }
+        } catch (err) {
+            document.getElementById('errorMsg').innerText = 'Network error';
+        }
+    });
+
+    function displayResults(data) {
+        resultsDiv.style.display = 'block';
+        document.getElementById('errorMsg').innerText = '';
+        totalSpan.innerText = `Total Estimated Effort: ${data.total} person‑hours`;
+        tableBody.innerHTML = '';
+        const phaseNames = [];
+        const phaseHours = [];
+        data.phases.forEach(phase => {
+            phaseNames.push(phase.name);
+            phaseHours.push(phase.hours);
+            const row = tableBody.insertRow();
+            row.insertCell(0).innerText = phase.name;
+            row.insertCell(1).innerText = phase.hours.toFixed(1);
+        });
+        if (chart) chart.destroy();
+        const ctx = document.getElementById('phaseChart').getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'bar',
+            data: { labels: phaseNames, datasets: [{ label: 'Effort (hours)', data: phaseHours, backgroundColor: 'rgba(54, 162, 235, 0.6)', borderColor: 'rgba(54, 162, 235, 1)', borderWidth: 1 }] },
+            options: { responsive: true, scales: { y: { beginAtZero: true, title: { display: true, text: 'Hours' } } }, plugins: { legend: { position: 'top' }, tooltip: { callbacks: { label: (ctx) => `${ctx.raw} hrs` } } } }
+        });
+    }
+
+    // CHAT: improved error handling
+    const chatBox = document.getElementById('chatHistory');
+    const chatInput = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendChatBtn');
+
+    function addMessage(sender, text) {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `chat-message ${sender === 'user' ? 'user-msg' : 'ai-msg'}`;
+        msgDiv.innerHTML = `<strong>${sender === 'user' ? 'You' : 'AI'}:</strong> ${text}`;
+        chatBox.appendChild(msgDiv);
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    sendBtn.addEventListener('click', async () => {
+        const question = chatInput.value.trim();
+        if (!question) return;
+        addMessage('user', question);
+        chatInput.value = '';
+        const params = JSON.parse(sessionStorage.getItem('lastParams') || '{}');
+        const total = sessionStorage.getItem('lastTotal') || 'unknown';
+        try {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question, params, total })
+            });
+            // Always try to parse JSON, even if status is not ok
+            let data;
+            try {
+                data = await response.json();
+            } catch (e) {
+                throw new Error(`Invalid JSON response (status ${response.status})`);
+            }
+            if (response.ok) {
+                addMessage('ai', data.answer);
+            } else {
+                addMessage('ai', `❌ Server error: ${data.error || 'Unknown error'}`);
+            }
+        } catch (err) {
+            console.error('Chat fetch error:', err);
+            addMessage('ai', `❌ Network error: ${err.message}. Check if backend is running and reachable.`);
+        }
+    });
+
+    document.getElementById('exportPdfBtn').addEventListener('click', async () => {
+        const params = getCurrentParams();
+        const totalElem = document.getElementById('totalEffort');
+        if (!totalElem || totalElem.innerText === '') {
+            alert('Please estimate effort first (click Estimate Effort).');
+            return;
+        }
+        const phases = [];
+        const rows = document.querySelectorAll('#phaseTable tbody tr');
+        rows.forEach(row => {
+            phases.push({ name: row.cells[0].innerText, hours: parseFloat(row.cells[1].innerText) });
+        });
+        const total = parseFloat(totalElem.innerText.match(/[\d.]+/)[0]);
+        const chatMessages = [];
+        document.querySelectorAll('.chat-message').forEach(msg => {
+            const text = msg.innerText;
+            const type = msg.classList.contains('user-msg') ? 'user' : 'ai';
+            chatMessages.push({ type, text });
+        });
+        const response = await fetch('/export_pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ params, total, phases, chatMessages })
+        });
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'effort_estimate_report.pdf';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+        } else {
+            alert('Failed to generate PDF.');
+        }
+    });
+</script>
+</body>
+</html>'''
+
+with open('templates/index.html', 'w') as f:
+    f.write(html_content)
+print("✅ HTML template created")
+
+# 5. Train model on REAL DATA if available, else synthetic
+import numpy as np
+import pandas as pd
+import pickle
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
+csv_path = 'historical_projects.csv'
+if os.path.exists(csv_path):
+    print(f"📊 Loading real data from {csv_path}")
+    df = pd.read_csv(csv_path)
+    feature_cols = ['req_count', 'complexity', 'team_exp', 'tech_unc', 
+                    'integrations', 'doc_quality', 'deadline', 'domain']
+    X = df[feature_cols].values
+    y = df['total_effort'].values
+    print(f"Loaded {len(X)} historical projects.")
+else:
+    print("⚠️ No historical_projects.csv found. Generating synthetic data for demo.")
+    np.random.seed(42)
+    n_samples = 1000
+    req_count = np.random.poisson(lam=50, size=n_samples) + 10
+    complexity = np.random.uniform(1, 5, n_samples)
+    team_exp = np.random.uniform(0, 15, n_samples)
+    tech_unc = np.random.uniform(0, 1, n_samples)
+    integrations = np.random.poisson(lam=5, size=n_samples)
+    doc_quality = np.random.uniform(1, 5, n_samples)
+    deadline = np.random.uniform(0.5, 2.0, n_samples)
+    domain = np.random.uniform(1, 5, n_samples)
+    X = np.column_stack([req_count, complexity, team_exp, tech_unc,
+                         integrations, doc_quality, deadline, domain])
+    true_coeffs = np.array([10, 50, -30, 200, 15, 5, -20, 10])
+    bias = 100
+    noise = np.random.normal(0, 50, n_samples)
+    y = X @ true_coeffs + bias + noise
+    y = np.maximum(y, 10)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+class LinearRegressionScratch:
+    def __init__(self, lr=0.01, n_iter=2000):
+        self.lr = lr
+        self.n_iter = n_iter
+        self.weights = None
+        self.bias = None
+
+    def fit(self, X, y):
+        n_samples, n_features = X.shape
+        self.weights = np.zeros(n_features)
+        self.bias = 0
+        for _ in range(self.n_iter):
+            y_pred = X @ self.weights + self.bias
+            dw = (2/n_samples) * X.T @ (y_pred - y)
+            db = (2/n_samples) * np.sum(y_pred - y)
+            self.weights -= self.lr * dw
+            self.bias -= self.lr * db
+
+    def predict(self, X):
+        return X @ self.weights + self.bias
+
+model = LinearRegressionScratch(lr=0.01, n_iter=2000)
+model.fit(X_train_scaled, y_train)
+
+y_pred = model.predict(X_test_scaled)
+mse = np.mean((y_test - y_pred) ** 2)
+print(f"✅ Model trained. Test MSE: {mse:.2f}")
+
+with open('effort_model.pkl', 'wb') as f:
+    pickle.dump({'weights': model.weights, 'bias': model.bias}, f)
+with open('scaler.pkl', 'wb') as f:
+    pickle.dump(scaler, f)
+print("✅ Model and scaler saved to Drive")
+
+# 6. Flask app with DeepSeek API calls (robust chat)
+from flask import Flask, request, jsonify, render_template, make_response
+import pinggy
+import threading
+import time
+import io
+import json
+import re
+import requests
+from docx import Document
+import pdfplumber
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+
+app = Flask(__name__)
+app.secret_key = os.urandom(24)
+
+# Load model and scaler
+with open('effort_model.pkl', 'rb') as f:
+    model_data = pickle.load(f)
+    weights = model_data['weights']
+    bias = model_data['bias']
+with open('scaler.pkl', 'rb') as f:
+    scaler = pickle.load(f)
+
+PHASE_DIST = {
+    "Requirement analysis": 0.08, "Clarifications": 0.05, "Design": 0.12,
+    "Development": 0.35, "Unit Test": 0.10, "SIT": 0.08, "UAT": 0.07,
+    "Preparation change": 0.05, "Deployment": 0.06, "Warranty": 0.04
+}
+
+def predict_total_effort(features):
+    X_input = np.array(features).reshape(1, -1)
+    X_scaled = scaler.transform(X_input)
+    total = X_scaled @ weights + bias
+    return float(total[0])
+
+# ---------- DeepSeek API helper with timeout and error handling ----------
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+def call_deepseek(prompt, system_message="You are a helpful assistant."):
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2000
+    }
+    try:
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
+        return response.json()["choices"][0]["message"]["content"]
+    except requests.exceptions.Timeout:
+        raise Exception("DeepSeek API timeout (30s). Please try again.")
+    except requests.exceptions.ConnectionError:
+        raise Exception("Cannot connect to DeepSeek API. Check your network.")
+    except Exception as e:
+        raise Exception(f"DeepSeek error: {str(e)}")
+
+# ---------- Document extraction ----------
+def extract_text_from_docx(file_bytes):
+    doc = Document(io.BytesIO(file_bytes))
+    return "\n".join([para.text for para in doc.paragraphs])
+
+def extract_text_from_pdf(file_bytes):
+    text = ""
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    return text
+
+def extract_params_with_deepseek(texts):
+    combined = "\n\n--- NEXT DOCUMENT ---\n\n".join(texts)
+    if len(combined) > 80000:
+        combined = combined[:80000] + "...[truncated]"
+    prompt = f"""Analyze the following business requirements document(s) and extract the 8 parameters needed for IT project effort estimation. Return ONLY a valid JSON object with exactly these keys:
+
+{{
+    "req_count": integer,
+    "complexity": float between 1 and 5,
+    "team_exp": float between 0 and 15,
+    "tech_unc": float between 0 and 1,
+    "integrations": integer,
+    "doc_quality": float between 1 and 5,
+    "deadline": float between 0.5 and 2,
+    "domain": float between 1 and 5
+}}
+
+Base your estimates on the content. Use reasonable defaults if information is missing. Do not include any explanation, only the JSON.
+
+Document text:
+{combined}
+"""
+    system_msg = "You are an expert IT project estimator. Output only valid JSON."
+    resp_text = call_deepseek(prompt, system_msg)
+    resp_text = re.sub(r'```json\s*|\s*```', '', resp_text.strip())
+    try:
+        params = json.loads(resp_text)
+        params['req_count'] = max(1, min(500, int(params.get('req_count', 50))))
+        params['complexity'] = max(1.0, min(5.0, float(params.get('complexity', 3.0))))
+        params['team_exp'] = max(0.0, min(15.0, float(params.get('team_exp', 3.0))))
+        params['tech_unc'] = max(0.0, min(1.0, float(params.get('tech_unc', 0.5))))
+        params['integrations'] = max(0, min(50, int(params.get('integrations', 5))))
+        params['doc_quality'] = max(1.0, min(5.0, float(params.get('doc_quality', 3.0))))
+        params['deadline'] = max(0.5, min(2.0, float(params.get('deadline', 1.0))))
+        params['domain'] = max(1.0, min(5.0, float(params.get('domain', 3.0))))
+        return params
+    except Exception as e:
+        raise ValueError(f"DeepSeek response invalid: {resp_text[:200]}... Error: {e}")
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    data = request.get_json()
+    features = [
+        float(data['req_count']), float(data['complexity']), float(data['team_exp']),
+        float(data['tech_unc']), float(data['integrations']), float(data['doc_quality']),
+        float(data['deadline']), float(data['domain'])
+    ]
+    total = predict_total_effort(features)
+    phases = [{"name": name, "hours": round(total * pct, 1)} for name, pct in PHASE_DIST.items()]
+    return jsonify({"total": round(total, 1), "phases": phases})
+
+@app.route('/upload', methods=['POST'])
+def upload_documents():
+    if 'documents' not in request.files:
+        return jsonify({'error': 'No files provided'}), 400
+    files = request.files.getlist('documents')
+    if len(files) == 0:
+        return jsonify({'error': 'Empty file list'}), 400
+    texts = []
+    for file in files:
+        if file.filename == '':
+            continue
+        file_bytes = file.read()
+        try:
+            if file.filename.endswith('.docx'):
+                text = extract_text_from_docx(file_bytes)
+            elif file.filename.endswith('.pdf'):
+                text = extract_text_from_pdf(file_bytes)
+            else:
+                continue
+            if text.strip():
+                texts.append(text)
+        except Exception:
+            continue
+    if not texts:
+        return jsonify({'error': 'No readable text extracted'}), 400
+    try:
+        params = extract_params_with_deepseek(texts)
+        return jsonify(params)
+    except Exception as e:
+        return jsonify({'error': f'DeepSeek extraction error: {str(e)}'}), 500
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    data = request.json
+    question = data.get('question', '')
+    params = data.get('params', {})
+    total = data.get('total', 'unknown')
+    
+    if not question:
+        return jsonify({'answer': 'Please ask a question.'})
+    
+    prompt = f"""The project parameters are:
+- Requirements count: {params.get('req_count', '?')}
+- Complexity: {params.get('complexity', '?')}/5
+- Team experience: {params.get('team_exp', '?')} years
+- Technical uncertainty: {params.get('tech_unc', '?')}
+- Integrations: {params.get('integrations', '?')}
+- Documentation quality: {params.get('doc_quality', '?')}/5
+- Deadline pressure: {params.get('deadline', '?')}
+- Domain knowledge: {params.get('domain', '?')}/5
+Total estimated effort: {total} person-hours.
+
+The user asks: "{question}"
+
+Provide a concise, helpful answer (max 150 words). If the question is about risks or recommendations, base it on the parameters.
+"""
+    system_msg = "You are an AI assistant helping a project manager understand an effort estimation."
+    
+    try:
+        answer = call_deepseek(prompt, system_msg)
+        return jsonify({'answer': answer})
+    except Exception as e:
+        print(f"❌ Chat error: {e}")  # This will appear in Colab output
+        fallback = f"I'm having trouble connecting to DeepSeek: {str(e)}. However, based on the parameters (complexity {params.get('complexity', '?')}/5, tech uncertainty {params.get('tech_unc', '?')}, deadline pressure {params.get('deadline', '?')}), the estimate seems reasonable. Please check your API key and network."
+        return jsonify({'answer': fallback}), 200  # Still return 200 OK
+
+@app.route('/export_pdf', methods=['POST'])
+def export_pdf():
+    data = request.json
+    params = data['params']
+    total = data['total']
+    phases = data['phases']
+    chat_messages = data.get('chatMessages', [])
+    
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
+    styles = getSampleStyleSheet()
+    title_style = styles['Title']
+    heading_style = styles['Heading2']
+    normal_style = styles['Normal']
+    
+    story = []
+    story.append(Paragraph("IT Project Effort Estimation Report", title_style))
+    story.append(Spacer(1, 0.25*inch))
+    
+    story.append(Paragraph("1. Input Parameters", heading_style))
+    param_data = [["Parameter", "Value"]]
+    for k, v in params.items():
+        param_data.append([k.replace('_', ' ').title(), str(v)])
+    param_table = Table(param_data, colWidths=[2.5*inch, 1.5*inch])
+    param_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2c3e50')), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('ALIGN', (1,1), (-1,-1), 'CENTER')]))
+    story.append(param_table)
+    story.append(Spacer(1, 0.2*inch))
+    
+    story.append(Paragraph(f"2. Total Estimated Effort: {total} person‑hours", heading_style))
+    story.append(Spacer(1, 0.1*inch))
+    
+    story.append(Paragraph("3. Phase Breakdown", heading_style))
+    phase_data = [["Phase", "Hours"]]
+    for ph in phases:
+        phase_data.append([ph['name'], f"{ph['hours']:.1f}"])
+    phase_table = Table(phase_data, colWidths=[3*inch, 1*inch])
+    phase_table.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2c3e50')), ('TEXTCOLOR', (0,0), (-1,0), colors.white)]))
+    story.append(phase_table)
+    story.append(Spacer(1, 0.2*inch))
+    
+    if chat_messages:
+        story.append(Paragraph("4. Chat History", heading_style))
+        for msg in chat_messages:
+            prefix = "You: " if msg['type'] == 'user' else "AI: "
+            story.append(Paragraph(f"<b>{prefix}</b>{msg['text']}", normal_style))
+            story.append(Spacer(1, 0.05*inch))
+    
+    doc.build(story)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    
+    response = make_response(pdf_bytes)
+    response.headers['Content-Type'] = 'application/pdf'
+    response.headers['Content-Disposition'] = 'attachment; filename=effort_report.pdf'
+    return response
+
+# 7. Run Flask and tunnel
+def run_flask():
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+thread = threading.Thread(target=run_flask, daemon=True)
+thread.start()
+time.sleep(3)
+
+try:
+    tunnel = pinggy.start_tunnel(forwardto="localhost:5000")
+    print(f"\n🌍 Your public URL is: {tunnel.urls[0]}")
+    print("✅ All features ready. Chat error handling improved – now shows detailed error messages.")
+    print("⚠️ Tunnel active for up to 60 minutes.")
+except Exception as e:
+    print(f"Tunnel failed: {e}")
+    print("Alternative: run in a new cell: !ssh -R 80:localhost:5000 pinggy.io")
+
+while True:
+    time.sleep(10)
